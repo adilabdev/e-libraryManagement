@@ -44,7 +44,7 @@ class Library:
     # Core Methods
     def add_book(self, book: Book) -> bool:
         """Kitap eklerken tüm ISBN varyasyonlarını kontrol et"""
-        # Kitabın zaten var olup olmadığını kontrol et
+        # Kitabın zaten var olup olmadığını kontrol etme
         for existing_book in self.books:
             if book.isbn == existing_book.isbn or book.title.lower() == existing_book.title.lower():
                 return False
@@ -85,13 +85,13 @@ class Library:
             print("⚠️ Geçersiz ISBN formatı (10 veya 13 rakam olmalı)")
             return None
 
-        # Önce önbelleği kontrol et
+        # Önbelleği kontrol etme
         for cached_isbn, book in self._api_cache.items():
             if cleaned_isbn in [cached_isbn, book.isbn]:
                 return book
 
         try:
-            # Open Library'yi dene (302 yönlendirmelerini takip et)
+            # Open Library'yi deneme (302 yönlendirmelerini takip et)
             async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 response = await client.get(f"https://openlibrary.org/isbn/{cleaned_isbn}.json")
                 if response.status_code == 404:
@@ -99,7 +99,7 @@ class Library:
                     
                 data = response.json()
                 
-                # ISBN'leri topla (10 ve 13 haneli)
+                # ISBN'leri toplama (10 ve 13 haneli)
                 isbns = set()
                 isbns.add(cleaned_isbn)
                 if "isbn_10" in data:
@@ -107,7 +107,7 @@ class Library:
                 if "isbn_13" in data:
                     isbns.update(data["isbn_13"])
                 
-                # Aynı kitabın diğer ISBN'lerini kontrol et
+                # Aynı kitabın diğer ISBN'lerini kontrol etme
                 for existing_isbn in isbns:
                     if existing_isbn in self._api_cache:
                         return self._api_cache[existing_isbn]
@@ -120,14 +120,14 @@ class Library:
                     elif isinstance(data["authors"][0], str):
                         author = data["authors"][0]
                 
-                # Kitap nesnesi oluştur
+                # Kitap nesnesi oluşturma
                 book = Book(
                     title=data.get("title", f"Bilinmeyen (ISBN: {cleaned_isbn})"),
                     author=author,
                     isbn=cleaned_isbn
                 )
                 
-                # Tüm ISBN'leri önbelleğe ekle
+                # Tüm ISBN'leri önbelleğe ekleme
                 for isbn_num in isbns:
                     self._api_cache[isbn_num] = book
                     
@@ -186,7 +186,7 @@ class Library:
             return None
 
     async def _try_google_books(self, isbn: str) -> Optional[Book]:
-        """Google Books API yedek kaynak"""
+        """Google Books API yedek kaynak uygulamak için"""
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
         
         try:
