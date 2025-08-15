@@ -1,8 +1,15 @@
-from difflib import get_close_matches
-import httpx
 import json
+import httpx
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict
+from difflib import get_close_matches
+
+logging.basicConfig(
+    filename='library.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class Book:
     def __init__(self, title: str, author: str, isbn: str):
@@ -11,124 +18,121 @@ class Book:
         self.isbn = isbn
 
     def __str__(self):
-        return f"'{self.title}' by {self.author} (ISBN: {self.isbn})"
+        return f"{self.title} by {self.author} (ISBN: {self.isbn})"
 
 class Library:
-    def __init__(self, db_file: str = "library_db.json"):
-        self.db_file = Path(db_file)
+    def __init__(self, file_path: str = "library.json"):
+        self.file_path = Path(file_path)
         self.books: List[Book] = []
-        self._load_books()
+        self._api_cache = {}
+        self.load_books()
 
-    # Veritabanı İşlemleri
-    def _load_books(self):
-        if self.db_file.exists():
-            with open(self.db_file, 'r') as f:
-                data = json.load(f)
-                self.books = [Book(**item) for item in data]
+    def load_books(self):
+        try:
+            if self.file_path.exists():
+                with open(self.file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.books = [Book(**item) for item in data]
+        except (json.JSONDecodeError, FileNotFoundError):
+            self.books = []
 
-    def _save_books(self):
-        with open(self.db_file, 'w') as f:
+    def save_books(self):
+        with open(self.file_path, 'w', encoding='utf-8') as f:
             json.dump([b.__dict__ for b in self.books], f, indent=2)
 
-    # Kütüphane İşlemleri
     def add_book(self, book: Book):
-        self.books.append(book)
-        self._save_books()
-        print(f"✅ Kitap eklendi: {book.title}")
-
-    def list_books(self):  # <-- EKSİK METOD EKLENDİ
-        if not self.books:
-            print("Kütüphane boş.")
-            return
-        print("\n📚 KÜTÜPHANE KİTAPLARI:")
-        for i, book in enumerate(self.books, 1):
-            print(f"{i}. {book}")
+        if not any(b.isbn == book.isbn for b in self.books):
+            self.books.append(book)
+            self.save_books()
+            return True
+        return False
 
     def remove_book(self, isbn: str):
-        for book in self.books:
-            if book.isbn == isbn:
-                self.books.remove(book)
-                self._save_books()
-                print(f"❌ Kitap silindi: {book.title}")
-                return
-        print("Kitap bulunamadı.")
+        book = self.find_book(isbn)
+        if book:
+            self.books.remove(book)
+            self.save_books()
+            return True
+        return False
 
-    def find_book(self, query: str):
+    def list_books(self):
+        return [str(book) for book in self.books]
+
+    def find_book(self, query: str) -> Optional[Book]:
+        query = query.lower()
         for book in self.books:
-            if query.lower() in (book.isbn.lower(), book.title.lower(), book.author.lower()):
+            if query in (book.isbn.lower(), book.title.lower(), book.author.lower()):
                 return book
-        self._suggest_books(query)
-        return None
-
-    def _suggest_books(self, query: str):
-        titles = [b.title for b in self.books]
-        matches = get_close_matches(query, titles, n=3, cutoff=0.4)
+        
+        matches = get_close_matches(query, [b.title for b in self.books], n=3, cutoff=0.4)
         if matches:
-            print("\n🔍 Benzer kitaplar:")
-            for title in matches:
-                print(f"- {title}")
-
-    # API İşlemleri
-    async def add_book_by_isbn(self, isbn: str):
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.get(f"https://openlibrary.org/isbn/{isbn}.json")
-                data = response.json()
-                book = Book(
-                    title=data.get("title", "Bilinmeyen"),
-                    author=data.get("authors", [{"name": "Bilinmeyen"}])[0]["name"],
-                    isbn=isbn
-                )
-                self.add_book(book)
-                return book
-            except Exception as e:
-                print(f"⚠️ Hata: {e}")
-                return None
-
-
+            print("Benzer kitaplar:")
+            for match in matches:
+                print(f"- {match}")
+        return None
 
     async def fetch_book_from_api(self, isbn: str) -> Optional[Book]:
-    # 1. ISBN Temizleme
-        cleaned_isbn = "".join(c for c in isbn if c.isdigit())
-    
-    # 2. Uzunluk Kontrolü
-        if len(cleaned_isbn) not in (10, 13):
-            print("⚠️ ISBN 10 veya 13 haneli olmalıdır")
+        cleaned_isbn = ''.join(c for c in isbn if c.isdigit())
+        if len(cleaned_isbn) not in (10, 13) or not cleaned_isbn.isdigit():
+            print("⚠️ Geçersiz ISBN formatı (10 veya 13 rakam olmalı)")
             return None
 
+        if cleaned_isbn in self._api_cache:
+            return self._api_cache[cleaned_isbn]
+
+        try:
+            # Önce Open Library'yi dene
+            book = await self._try_open_library(cleaned_isbn)
+            if not book:
+                # Sonra Google Books'u dene
+                book = await self._try_google_books(cleaned_isbn)
+            
+            if book:
+                self._api_cache[cleaned_isbn] = book
+                return book
+            
+            print(f"⚠️ Kitap bulunamadı (ISBN: {cleaned_isbn})")
+            return None
+                
+        except Exception as e:
+            logging.error(f"ISBN: {cleaned_isbn} - Hata: {str(e)}")
+            print("⚠️ Kitap getirilirken hata oluştu (log kaydı oluşturuldu)")
+            return None
+
+    async def _try_open_library(self, isbn: str) -> Optional[Book]:
+        url = f"https://openlibrary.org/isbn/{isbn}.json"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-            # 3. Kitap Bilgisi
-                book_url = f"https://openlibrary.org/isbn/{cleaned_isbn}.json"
-                book_res = await client.get(book_url)
-            
-                if book_res.status_code == 404:
-                    print(f"⚠️ Bu ISBN ile kitap bulunamadı: {cleaned_isbn}")
+                response = await client.get(url)
+                if response.status_code == 404:
                     return None
+                response.raise_for_status()
+                data = response.json()
                 
-                book_data = book_res.json()
-            
-                # 4. Yazar Detayı (Ek İstek)
-                author_name = "Bilinmeyen Yazar"
-                if "authors" in book_data:
-                    author_url = f"https://openlibrary.org{book_data['authors'][0]['key']}.json"
-                    author_res = await client.get(author_url)
-                    if author_res.status_code == 200:
-                        author_data = author_res.json()
-                        author_name = author_data.get("name", author_name)
-            
-                # 5. Kitap Nesnesi Oluşturma
-                return Book(
-                    title=book_data.get("title", "Bilinmeyen Başlık"),
-                    author=author_name,
-                    isbn=cleaned_isbn
-            )
-            
-        except httpx.RequestError:
-            print("⚠️ API'ye bağlanılamadı (internet bağlantınızı kontrol edin)")
-        except json.JSONDecodeError:
-            print("⚠️ API geçersiz yanıt verdi")
-        except Exception as e:
-            print(f"⚠️ Beklenmeyen hata: {type(e).__name__}")
-    
-        return None
+                title = data.get("title", f"Bilinmeyen (ISBN: {isbn})")
+                author = "Bilinmeyen Yazar"
+                if "authors" in data and data["authors"]:
+                    if isinstance(data["authors"][0], dict):
+                        author = data["authors"][0].get("name", author)
+                    elif isinstance(data["authors"][0], str):
+                        author = data["authors"][0]
+                
+                return Book(title, author, isbn)
+        except (httpx.RequestError, json.JSONDecodeError, KeyError):
+            return None
+
+    async def _try_google_books(self, isbn: str) -> Optional[Book]:
+        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(url)
+                data = response.json()
+                if data.get("totalItems", 0) > 0:
+                    item = data["items"][0]["volumeInfo"]
+                    return Book(
+                        title=item.get("title", "Bilinmeyen"),
+                        author=", ".join(item.get("authors", ["Bilinmeyen Yazar"])),
+                        isbn=isbn
+                    )
+        except Exception:
+            return None
