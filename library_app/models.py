@@ -1,7 +1,7 @@
-import httpx
 import json
+import httpx
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from difflib import get_close_matches
 
 class Book:
@@ -11,53 +11,46 @@ class Book:
         self.isbn = isbn
 
     def __str__(self):
-        return f"'{self.title}' by {self.author} (ISBN: {self.isbn})"
+        return f"{self.title} by {self.author} (ISBN: {self.isbn})"
 
 class Library:
-    def __init__(self, db_file: str = "library.json"):
-        self.db_file = Path(db_file)
+    def __init__(self, file_path: str = "library.json"):
+        self.file_path = Path(file_path)
         self.books: List[Book] = []
-        self._load_books()
+        self.load_books()
 
-    def _load_books(self):
+    # JSON Operations
+    def load_books(self):
         try:
-            if self.db_file.exists():
-                with open(self.db_file, 'r', encoding='utf-8') as f:
+            if self.file_path.exists():
+                with open(self.file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.books = [Book(**item) for item in data]
         except (json.JSONDecodeError, FileNotFoundError):
             self.books = []
 
-    def _save_books(self):
-        with open(self.db_file, 'w', encoding='utf-8') as f:
+    def save_books(self):
+        with open(self.file_path, 'w', encoding='utf-8') as f:
             json.dump([b.__dict__ for b in self.books], f, indent=2)
 
-    def add_book(self, book: Book) -> bool:
+    # Core Methods
+    def add_book(self, book: Book):
         if not any(b.isbn == book.isbn for b in self.books):
             self.books.append(book)
-            self._save_books()
-            print(f"✅ Kitap eklendi: {book.title}")
+            self.save_books()
             return True
-        print("⚠️ Bu ISBN zaten kayıtlı!")
         return False
 
-    def list_books(self) -> None:
-        if not self.books:
-            print("\n📚 Kütüphane boş")
-            return
-        print("\n📚 KÜTÜPHANE KİTAPLARI:")
-        for i, book in enumerate(self.books, 1):
-            print(f"{i}. {book}")
-
-    def remove_book(self, isbn: str) -> bool:
-        for book in self.books:
-            if book.isbn == isbn:
-                self.books.remove(book)
-                self._save_books()
-                print(f"❌ Kitap silindi: {book.title}")
-                return True
-        print("⚠️ Kitap bulunamadı")
+    def remove_book(self, isbn: str):
+        book = self.find_book(isbn)
+        if book:
+            self.books.remove(book)
+            self.save_books()
+            return True
         return False
+
+    def list_books(self):
+        return [str(book) for book in self.books]
 
     def find_book(self, query: str) -> Optional[Book]:
         query = query.lower()
@@ -65,17 +58,18 @@ class Library:
             if query in (book.isbn.lower(), book.title.lower(), book.author.lower()):
                 return book
         
-        matches = get_close_matches(query, [b.title.lower() for b in self.books], n=3, cutoff=0.4)
+        matches = get_close_matches(query, [b.title for b in self.books], n=3, cutoff=0.4)
         if matches:
-            print("\n🔍 Benzer kitaplar:")
-            for title in matches:
-                print(f"- {title}")
+            print("Benzer kitaplar:")
+            for match in matches:
+                print(f"- {match}")
         return None
 
+    # API Integration
     async def fetch_book_from_api(self, isbn: str) -> Optional[Book]:
-        cleaned_isbn = isbn.replace("-", "").strip()
-        if not cleaned_isbn.isdigit():
-            print("⚠️ Geçersiz ISBN formatı (sadece rakam ve tire içermeli)")
+        cleaned_isbn = isbn.strip().replace("-", "")
+        if not cleaned_isbn.isdigit() or len(cleaned_isbn) not in (10, 13):
+            print("Geçersiz ISBN formatı")
             return None
 
         url = f"https://openlibrary.org/isbn/{cleaned_isbn}.json"
@@ -85,22 +79,22 @@ class Library:
                 response = await client.get(url)
                 
                 if response.status_code == 404:
-                    print("⚠️ Kitap bulunamadı (Geçersiz ISBN)")
+                    print("Kitap bulunamadı")
                     return None
                     
                 data = response.json()
                 
-                title = data.get("title", "Bilinmeyen Başlık")
+                title = data.get("title", f"Bilinmeyen (ISBN: {cleaned_isbn})")
                 authors = data.get("authors", [{"name": "Bilinmeyen Yazar"}])
                 author = authors[0].get("name", "Bilinmeyen Yazar") if authors else "Bilinmeyen Yazar"
                 
                 return Book(title, author, cleaned_isbn)
                 
         except httpx.RequestError as e:
-            print(f"⚠️ Ağ hatası: {e}")
+            print(f"API bağlantı hatası: {e}")
         except json.JSONDecodeError:
-            print("⚠️ Geçersiz API yanıtı")
+            print("Geçersiz API yanıtı")
         except Exception as e:
-            print(f"⚠️ Beklenmeyen hata: {type(e).__name__}: {e}")
-            
+            print(f"Beklenmeyen hata: {type(e).__name__}")
+        
         return None
